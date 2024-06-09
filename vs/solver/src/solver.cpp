@@ -517,109 +517,6 @@ void test_sample() {
 
 }
 
-Output solve(const Input& input) {
-
-    Hero hero(input.hero);
-    auto [x, y] = input.start_pos;
-
-    std::vector<Monster> monsters;
-    for (const auto& minfo : input.monsters) {
-        monsters.emplace_back(minfo);
-    }
-
-    std::vector<Action> actions;
-
-    auto get_nearest_monster_id = [&]() {
-        int mindist2 = INT_MAX;
-        int id = -1;
-        for (int mid = 0; mid < (int)monsters.size(); mid++) {
-            const auto& monster = monsters[mid];
-            if (monster.hp <= 0) continue;
-            const auto [mx, my] = monster.info.pos;
-            int dist2 = (x - mx) * (x - mx) + (y - my) * (y - my);
-            if (chmin(mindist2, dist2)) {
-                id = mid;
-            }
-        }
-        return id;
-    };
-
-    auto all_monsters_are_dead = [&]() {
-        for (const auto& monster : monsters) {
-            if (monster.hp > 0) return false;
-        }
-        return true;
-    };
-
-    auto can_attack = [&](int mid) {
-        const Monster& monster = monsters[mid];
-        assert(monster.hp > 0);
-        const auto [mx, my] = monster.info.pos;
-        const int range = hero.range();
-        return (x - mx) * (x - mx) + (y - my) * (y - my) <= range * range;
-    };
-
-    auto attack = [&](int mid) {
-        Monster& monster = monsters[mid];
-        monster.hp -= hero.power();
-        if (monster.hp <= 0) {
-            hero.xp += monster.info.xp;
-            hero.gold += monster.info.gold;
-            hero.update();
-        }
-        actions.push_back(Action::attack(mid));
-    };
-
-    auto move_to_monster = [&](int mid) {
-        const Monster& monster = monsters[mid];
-        const auto [mx, my] = monster.info.pos;
-        const int speed = hero.speed();
-        int mindist2 = INT_MAX;
-        int tx = -1, ty = -1;
-        for (int nx = std::max(0, x - speed); nx <= std::min(input.width, x + speed); nx++) {
-            for (int ny = std::max(0, y - speed); ny <= std::min(input.height, y + speed); ny++) {
-                if ((x - nx) * (x - nx) + (y - ny) * (y - ny) > speed * speed) continue;
-                const int dist2 = (nx - mx) * (nx - mx) + (ny - my) * (ny - my);
-                if (chmin(mindist2, dist2)) {
-                    tx = nx;
-                    ty = ny;
-                }
-            }
-        }
-        x = tx;
-        y = ty;
-        actions.push_back(Action::move(x, y));
-    };
-
-    auto move_to_monster2 = [&](int mid) {
-        const Monster& monster = monsters[mid];
-        const int speed = hero.speed();
-        auto [tx, ty] = near_lattice_point({ x, y }, monster.info.pos, speed);
-        x = tx;
-        y = ty;
-        actions.push_back(Action::move(x, y));
-    };
-    
-    for (int turn = 0; turn < input.num_turns; turn++) {
-        if (all_monsters_are_dead()) {
-            actions.push_back(Action::move(x, y)); // do nothing
-        }
-        else {
-            int mid = get_nearest_monster_id();
-            if (can_attack(mid)) {
-                attack(mid);
-            }
-            else {
-                //move_to_monster(mid);
-                move_to_monster2(mid);
-            }
-        }
-        //dump(turn, hero.level, hero.gold, actions.back().to_json());
-    }
-
-    return { actions };
-}
-
 struct State {
 
     const Input& input;
@@ -701,7 +598,7 @@ struct State {
         actions.push_back(Action::move(pos.x, pos.y));
     }
 
-    Output solve_nearest_neighbor() {
+    void solve_nearest_neighbor() {
         for (int turn = 0; turn < input.num_turns; turn++) {
             if (all_monsters_are_dead()) {
                 actions.push_back(Action::move(pos.x, pos.y)); // do nothing
@@ -718,16 +615,156 @@ struct State {
             }
             //dump(turn, hero.level, hero.gold, actions.back().to_json());
         }
+    }
 
-        return { actions };
+    void solve_with_order(const std::vector<int>& order) {
+        int turn = 0;
+        for (int mid : order) {
+            while (monsters[mid].hp > 0) {
+                if (can_attack(mid)) {
+                    attack(mid);
+                }
+                else {
+                    move_to_monster2(mid);
+                }
+                turn++;
+                if (input.num_turns <= turn) return;
+            }
+        }
+        while (turn < input.num_turns) {
+            actions.push_back(Action::move(pos.x, pos.y));
+        }
     }
 
 };
+
+Output solve(const Input& input) {
+
+    Timer timer;
+
+    int best_score = -1;
+    std::vector<Action> best_actions;
+
+    std::vector<int> order(input.monsters.size());
+    std::iota(order.begin(), order.end(), 0);
+
+    {
+        State state(input);
+        state.solve_nearest_neighbor();
+        best_score = state.hero.gold;
+        best_actions = state.actions;
+        dump(best_score);
+        order.clear();
+        std::set<int> seen;
+        for (const auto& action : best_actions) {
+            if (action.type == Action::Type::ATTACK) {
+                if (!seen.count(action.id)) {
+                    seen.insert(action.id);
+                    order.push_back(action.id);
+                }
+            }
+        }
+        for (int mid = 0; mid < input.monsters.size(); mid++) {
+            if (!seen.count(mid)) {
+                seen.insert(mid);
+                order.push_back(mid);
+            }
+        }
+    }
+
+    int prev_score = best_score;
+
+    Xorshift rnd;
+    int loop = 0;
+    const int num_monsters = input.monsters.size();
+    double start_time = timer.elapsed_ms(), now_time, end_time = 100000;
+    double start_temp = 1000;
+    while ((now_time = timer.elapsed_ms()) < end_time) {
+        loop++;
+
+        int i, j;
+        do {
+            i = rnd.next_u32(0, num_monsters - 1);
+            j = rnd.next_u32(1, num_monsters);
+        } while (i == j);
+        if (i > j) std::swap(i, j);
+
+        if (!rnd.next_u32(10)) {
+            std::reverse(order.begin() + i, order.begin() + j);
+            State state(input);
+            state.solve_with_order(order);
+            int diff = state.hero.gold - prev_score;
+            double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
+            double prob = exp(diff / temp);
+            if (rnd.next_double() < prob) {
+                prev_score = state.hero.gold;
+                if (chmax(best_score, state.hero.gold)) {
+                    best_actions = state.actions;
+                    dump("rev", timer.elapsed_ms(), loop, best_score);
+                }
+            }
+            else {
+                std::reverse(order.begin() + i, order.begin() + j);
+            }
+        }
+        else if (j < num_monsters) {
+            std::swap(order[i], order[j]);
+            State state(input);
+            state.solve_with_order(order);
+            int diff = state.hero.gold - prev_score;
+            double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
+            double prob = exp(diff / temp);
+            if (rnd.next_double() < prob) {
+                prev_score = state.hero.gold;
+                if (chmax(best_score, state.hero.gold)) {
+                    best_actions = state.actions;
+                    dump("swp", timer.elapsed_ms(), loop, best_score);
+                }
+            }
+            else {
+                std::swap(order[i], order[j]);
+            }
+        }
+
+        if (!(loop & 0xFFF)) {
+            dump(timer.elapsed_ms(), loop, prev_score);
+        }
+
+    }
+
+    return { best_actions };
+}
 
 void output_solution(const Output& output, const std::string output_filename) {
     std::ofstream output_file(output_filename);
     nlohmann::json output_json = output.to_json();
     output_file << output_json;
+}
+
+Input load_input(int seed) {
+    std::string input_filename(format("../../in/%03d.json", seed));
+    std::ifstream input_file(input_filename);
+    nlohmann::json input_json;
+    input_file >> input_json;
+    return Input::load(input_json);
+}
+
+void output_if_best(int seed, const Output& output) {
+    int best_score = -1;
+    auto input = load_input(seed);
+    std::string output_filename(format("../../out/%03d.json", seed));
+    if (std::filesystem::exists(output_filename)) {
+        std::ifstream output_file(output_filename);
+        nlohmann::json output_json;
+        output_file >> output_json;
+        auto output_best = Output::load(output_json);
+        best_score = compute_score(input, output_best);
+    }
+    int score = compute_score(input, output);
+    if (best_score < score) {
+        std::cerr << format("seed %3d: %9d -> %9d\n", seed, best_score, score);
+        output_solution(output, output_filename);
+    }
 }
 
 void batch_execute() {
@@ -738,8 +775,7 @@ void batch_execute() {
         nlohmann::json input_json;
         input_file >> input_json;
         auto input = Input::load(input_json);
-        State state(input);
-        auto output = state.solve_nearest_neighbor();
+        auto output = solve(input);
         //auto output = solve(input);
         dump(seed, compute_score(input, output));
         output_solution(output, format("../../out/%03d.json", seed));
@@ -747,12 +783,11 @@ void batch_execute() {
     dump(timer.elapsed_ms());
 }
 
-
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
 #ifdef _MSC_VER
-    batch_execute();
-    exit(0);
+    //batch_execute();
+    //exit(0);
 #endif
 
     Timer timer;
@@ -761,18 +796,11 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     cv::utils::logging::setLogLevel(cv::utils::logging::LogLevel::LOG_LEVEL_SILENT);
 #endif
 
-    std::string input_filename("../../in/002.json");
-    std::ifstream input_file(input_filename);
-    nlohmann::json input_json;
-    input_file >> input_json;
-
-    auto input = Input::load(input_json);
-
+    const int seed = 8;
+    auto input = load_input(seed);
     auto output = solve(input);
 
-    dump(compute_score(input, output));
-
-    output_solution(output, "../../out/002.json");
+    output_if_best(seed, output);
 
     return 0;
 }
