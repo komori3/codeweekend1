@@ -547,17 +547,22 @@ int compute_score(const Input& input, const Output& output) {
     return hero.gold;
 }
 
-void output_if_best(int seed, const Output& output) {
+int get_best_score(int seed) {
     int best_score = -1;
     auto input = load_input(seed);
     auto output_best_opt = load_output(seed);
     if (output_best_opt) {
         best_score = compute_score(input, output_best_opt.value());
     }
+    return best_score;
+}
+
+void output_if_best(int seed, const Output& output) {
+    int best_score = get_best_score(seed);
+    auto input = load_input(seed);
     int score = compute_score(input, output);
-    //dump(best_score, score);
     if (best_score < score) {
-        std::cerr << format("seed %3d: %9d -> %9d\n", seed, best_score, score);
+        std::cerr << format("seed %3d: %9d -> %9d (+%2.4f%%)\n", seed, best_score, score, (score - best_score) * 100.0 / best_score);
         output_solution(output, format("../../out/%03d.json", seed));
     }
 }
@@ -673,8 +678,22 @@ struct State {
         }
     }
 
-    void solve_nearest_neighbor() {
+    void solve_nearest_neighbor(int first_monster_id = -1) {
+        bool reached = false;
+        if (first_monster_id == -1) {
+            reached = true;
+        }
         for (int turn = 0; turn < input.num_turns; turn++) {
+            if (!reached) {
+                if (!can_attack(first_monster_id)) {
+                    move_to_monster2(first_monster_id);
+                    monsters_attack();
+                    continue;
+                }
+                else {
+                    reached = true;
+                }
+            }
             if (all_monsters_are_dead()) {
                 actions.push_back(Action::move(pos.x, pos.y)); // do nothing
             }
@@ -723,14 +742,24 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
     int best_score = -1;
     std::vector<Action> best_actions;
 
+    //for (int mid = -1; mid < (int)input.monsters.size(); mid++) {
+    //    State state(input);
+    //    state.solve_nearest_neighbor(mid);
+    //    int score = compute_score(input, { state.actions });
+    //    if (chmax(best_score, score)) {
+    //        best_actions = state.actions;
+    //    }
+    //}
+    //return { best_actions };
+
     std::vector<int> order(input.monsters.size());
     std::iota(order.begin(), order.end(), 0);
 
     {
-        State state(input);
-        state.solve_nearest_neighbor();
-        best_score = state.hero.gold;
-        best_actions = state.actions;
+        //State state(input);
+        //state.solve_nearest_neighbor();
+        //best_score = state.hero.gold;
+        //best_actions = state.actions;
         if (seed != -1) {
             auto output_best_opt = load_output(seed);
             if (output_best_opt) {
@@ -766,6 +795,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
     const int num_monsters = input.monsters.size();
     double start_time = timer.elapsed_ms(), now_time, end_time = start_time + duration_ms;
     double start_temp = best_score * temp_ratio;
+    double end_temp = start_temp * 0.1;
     //dump(start_temp);
     int rev_ctr = 0, swp_ctr = 0;
     while ((now_time = timer.elapsed_ms()) < end_time) {
@@ -783,7 +813,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             State state(input);
             state.solve_with_order(order);
             int diff = state.hero.gold - prev_score;
-            double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
+            double temp = get_temp(start_temp, end_temp, now_time - start_time, end_time - start_time);
             double prob = exp(diff / temp);
             if (rnd.next_double() < prob) {
                 rev_ctr++;
@@ -802,7 +832,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             State state(input);
             state.solve_with_order(order);
             int diff = state.hero.gold - prev_score;
-            double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
+            double temp = get_temp(start_temp, end_temp, now_time - start_time, end_time - start_time);
             double prob = exp(diff / temp);
             if (rnd.next_double() < prob) {
                 swp_ctr++;
@@ -836,7 +866,7 @@ void batch_execute() {
         dump(begin, end);
         concurrency::parallel_for(begin, end, [&](int seed) {
             auto input = load_input(seed);
-            auto output = solve(input, seed, 100000, 0.001);
+            auto output = solve(input, seed, 10000, 0.01);
             {
                 mtx.lock();
                 output_if_best(seed, output);
@@ -846,10 +876,47 @@ void batch_execute() {
     }
 }
 
+void batch_execute2() {
+    const int batch_size = 5;
+    std::vector<int> seeds, best_scores, next_seeds, next_best_scores;
+    for (int seed = 26; seed <= 50; seed++) {
+        seeds.push_back(seed);
+        best_scores.push_back(get_best_score(seed));
+    }
+    while (!seeds.empty()) {
+        next_seeds.clear();
+        next_best_scores.clear();
+        dump(seeds);
+        dump(best_scores);
+        concurrency::critical_section mtx;
+        for (int begin = 0; begin < (int)seeds.size(); begin += batch_size) {
+            int end = std::min(begin + batch_size, (int)seeds.size());
+            concurrency::parallel_for(begin, end, [&seeds, &best_scores, &next_seeds, &next_best_scores, &mtx](int id) {
+                int seed = seeds[id];
+                int best_score = best_scores[id];
+                auto input = load_input(seed);
+                auto output = solve(input, seed, 60000, 0.001);
+                int score = compute_score(input, output);
+                {
+                    mtx.lock();
+                    output_if_best(seed, output);
+                    if (best_score < score) {
+                        next_seeds.push_back(seed);
+                        next_best_scores.push_back(score);
+                    }
+                    mtx.unlock();
+                }
+                });
+        }
+        seeds = next_seeds;
+        best_scores = next_best_scores;
+    }
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
 #if 1
-    batch_execute();
+    batch_execute2();
     exit(0);
 #endif
 
