@@ -292,10 +292,12 @@ struct MonsterInfo {
     const int hp;
     const int gold;
     const int xp;
+    const int range;
+    const int attack;
 
 private:
-    MonsterInfo(const Point pos_, const int hp_, const int gold_, const int exp_)
-        : pos(pos_), hp(hp_), gold(gold_), xp(exp_) {}
+    MonsterInfo(const Point pos_, const int hp_, const int gold_, const int xp_, const int range_, const int attack_)
+        : pos(pos_), hp(hp_), gold(gold_), xp(xp_), range(range_), attack(attack_) {}
 
 public:
     static MonsterInfo load(nlohmann::json j) {
@@ -304,7 +306,9 @@ public:
         const int hp = j["hp"];
         const int gold = j["gold"];
         const int exp = j["exp"];
-        return MonsterInfo(Point(x, y), hp, gold, exp);
+        const int range = j["range"];
+        const int attack = j["attack"];
+        return MonsterInfo(Point(x, y), hp, gold, exp, range, attack);
     }
 
 };
@@ -347,8 +351,9 @@ struct Hero {
     int level;
     int xp;
     int gold;
+    int fatigue;
 
-    Hero(const HeroInfo& info_) : info(info_), level(0), xp(0), gold(0) {}
+    Hero(const HeroInfo& info_) : info(info_), level(0), xp(0), gold(0), fatigue(0) {}
 
     inline int speed() const {
         return info.base_speed + info.base_speed * level * info.level_speed_coeff / 100;
@@ -514,8 +519,13 @@ int compute_score(const Input& input, const Output& output) {
             monster.hp -= hero.power();
             if (monster.hp <= 0) { // dead
                 hero.xp += monster.info.xp;
-                hero.gold += monster.info.gold;
+                hero.gold += (size_t)monster.info.gold * 1000 / (1000 + hero.fatigue);
                 hero.update();
+            }
+        }
+        for (const auto& monster : monsters) {
+            if (monster.hp > 0 && monster.info.pos.dist2(Point(x, y)) <= monster.info.range * monster.info.range) {
+                hero.fatigue += monster.info.attack;
             }
         }
     }
@@ -538,20 +548,21 @@ void output_if_best(int seed, const Output& output) {
 
 void test_sample() {
 
-    std::string input_filename("../../in/000.json");
+    std::string input_filename("../../in/000_v2.json");
     std::ifstream input_file(input_filename);
     nlohmann::json input_json;
     input_file >> input_json;
 
     auto input = Input::load(input_json);
 
-    std::string output_filename("../../out/000.json");
+    std::string output_filename("../../out/000_v2.json");
     std::ifstream output_file(output_filename);
     nlohmann::json output_json;
     output_file >> output_json;
 
     auto output = Output::load(output_json);
 
+    dump(compute_score(input, output));
     assert(compute_score(input, output) == 664);
 
 }
@@ -804,6 +815,9 @@ void batch_execute() {
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+
+    test_sample();
+    exit(0);
 
 #ifdef _MSC_VER
     batch_execute();
