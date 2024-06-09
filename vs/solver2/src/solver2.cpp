@@ -319,12 +319,13 @@ struct Input {
     const int width;
     const int height;
     const Point start_pos;
-    HeroInfo hero;
-    std::vector<MonsterInfo> monsters;
+    const HeroInfo hero;
+    const std::vector<MonsterInfo> monsters;
+    const std::vector<std::vector<std::vector<int>>> attacking;
 
 private:
-    Input(const int num_turns_, const int width_, const int height_, const Point start_pos_, const HeroInfo& hero_, const std::vector<MonsterInfo>& monsters_)
-        : num_turns(num_turns_), width(width_), height(height_), start_pos(start_pos_), hero(hero_), monsters(monsters_) {}
+    Input(const int num_turns_, const int width_, const int height_, const Point start_pos_, const HeroInfo& hero_, const std::vector<MonsterInfo>& monsters_, const std::vector<std::vector<std::vector<int>>>& attacking_)
+        : num_turns(num_turns_), width(width_), height(height_), start_pos(start_pos_), hero(hero_), monsters(monsters_), attacking(attacking_) {}
 
 public:
     static Input load(nlohmann::json j) {
@@ -335,11 +336,25 @@ public:
         const int start_y = j["start_y"];
         const auto hero = HeroInfo::load(j["hero"]);
         std::vector<MonsterInfo> monsters;
+        auto attacking = make_vector(std::vector<int>(), width + 1, height + 1);
+        int mid = 0, ctr = 0;
         for (nlohmann::json jj : j["monsters"]) {
             auto monster = MonsterInfo::load(jj);
             monsters.push_back(monster);
+            const int range = monster.range;
+            for (int x = std::max(0, monster.pos.x - range); x <= std::min(width, monster.pos.x + range); x++) {
+                for (int y = std::max(0, monster.pos.y - range); y <= std::min(height, monster.pos.y + range); y++) {
+                    if (monster.pos.dist2(Point(x, y)) <= range * range) {
+                        attacking[x][y].push_back(mid);
+                        ctr++;
+                    }
+                }
+            }
+            mid++;
         }
-        return Input(num_turns, width, height, Point(start_x, start_y), hero, monsters);
+        //dump(width, height, monsters.size(), ctr);
+
+        return Input(num_turns, width, height, Point(start_x, start_y), hero, monsters, attacking);
     }
 
 };
@@ -540,6 +555,7 @@ void output_if_best(int seed, const Output& output) {
         best_score = compute_score(input, output_best_opt.value());
     }
     int score = compute_score(input, output);
+    //dump(best_score, score);
     if (best_score < score) {
         std::cerr << format("seed %3d: %9d -> %9d\n", seed, best_score, score);
         output_solution(output, format("../../out/%03d.json", seed));
@@ -562,8 +578,7 @@ void test_sample() {
 
     auto output = Output::load(output_json);
 
-    dump(compute_score(input, output));
-    assert(compute_score(input, output) == 664);
+    assert(compute_score(input, output) == 839);
 
 }
 
@@ -613,7 +628,7 @@ struct State {
         monster.hp -= hero.power();
         if (monster.hp <= 0) {
             hero.xp += monster.info.xp;
-            hero.gold += monster.info.gold;
+            hero.gold += (size_t)monster.info.gold * 1000 / (1000 + hero.fatigue);
             hero.update();
         }
         actions.push_back(Action::attack(mid));
@@ -648,6 +663,16 @@ struct State {
         actions.push_back(Action::move(pos.x, pos.y));
     }
 
+    void monsters_attack() {
+        for (int mid : input.attacking[pos.x][pos.y]) {
+            const auto& monster = monsters[mid];
+        //for (const auto& monster : monsters) {
+            if (monster.hp > 0) {
+                hero.fatigue += monster.info.attack;
+            }
+        }
+    }
+
     void solve_nearest_neighbor() {
         for (int turn = 0; turn < input.num_turns; turn++) {
             if (all_monsters_are_dead()) {
@@ -663,7 +688,7 @@ struct State {
                     move_to_monster2(mid);
                 }
             }
-            //dump(turn, hero.level, hero.gold, actions.back().to_json());
+            monsters_attack();
         }
     }
 
@@ -677,12 +702,15 @@ struct State {
                 else {
                     move_to_monster2(mid);
                 }
+                monsters_attack();
                 turn++;
                 if (input.num_turns <= turn) return;
             }
+            
         }
         while (turn < input.num_turns) {
             actions.push_back(Action::move(pos.x, pos.y));
+            monsters_attack();
         }
     }
 
@@ -739,6 +767,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
     double start_time = timer.elapsed_ms(), now_time, end_time = start_time + duration_ms;
     double start_temp = best_score * temp_ratio;
     //dump(start_temp);
+    int rev_ctr = 0, swp_ctr = 0;
     while ((now_time = timer.elapsed_ms()) < end_time) {
         loop++;
 
@@ -757,6 +786,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
             double prob = exp(diff / temp);
             if (rnd.next_double() < prob) {
+                rev_ctr++;
                 prev_score = state.hero.gold;
                 if (chmax(best_score, state.hero.gold)) {
                     best_actions = state.actions;
@@ -775,6 +805,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             double temp = get_temp(start_temp, 0.0, now_time - start_time, end_time - start_time);
             double prob = exp(diff / temp);
             if (rnd.next_double() < prob) {
+                swp_ctr++;
                 prev_score = state.hero.gold;
                 if (chmax(best_score, state.hero.gold)) {
                     best_actions = state.actions;
@@ -787,24 +818,25 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
         }
 
         if (!(loop & 0xFFF)) {
-            //dump(timer.elapsed_ms(), loop, prev_score);
+            //dump(timer.elapsed_ms(), loop, prev_score, rev_ctr, swp_ctr);
         }
 
     }
+    //dump(loop, best_score, prev_score);
 
     return { best_actions };
 }
 
 void batch_execute() {
     const int batch_size = 5;
-    const int num_seeds = 25;
+    const int num_seeds = 50;
     concurrency::critical_section mtx;
-    for (int begin = 1; begin <= num_seeds; begin += batch_size) {
+    for (int begin = 26; begin <= num_seeds; begin += batch_size) {
         int end = std::min(begin + batch_size, num_seeds + 1);
         dump(begin, end);
         concurrency::parallel_for(begin, end, [&](int seed) {
             auto input = load_input(seed);
-            auto output = solve(input, seed, 100000, 0.0001);
+            auto output = solve(input, seed, 100000, 0.001);
             {
                 mtx.lock();
                 output_if_best(seed, output);
@@ -816,10 +848,7 @@ void batch_execute() {
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
-    test_sample();
-    exit(0);
-
-#ifdef _MSC_VER
+#if 1
     batch_execute();
     exit(0);
 #endif
@@ -830,9 +859,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     cv::utils::logging::setLogLevel(cv::utils::logging::LogLevel::LOG_LEVEL_SILENT);
 #endif
 
-    const int seed = 12;
+    const int seed = 29;
     auto input = load_input(seed);
-    auto output = solve(input, seed);
+    auto output = solve(input, seed, 100000, 0.01);
 
     output_if_best(seed, output);
 
