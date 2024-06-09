@@ -191,6 +191,9 @@ struct LogTable {
 struct Point {
     int x, y;
     Point(int x_ = 0, int y_ = 0) : x(x_), y(y_) {}
+    inline int dist2(const Point& rhs) const {
+        return (x - rhs.x) * (x - rhs.x) + (y - rhs.y) * (y - rhs.y);
+    }
 };
 
 Point nearest_lattice_point(const Point& from, const Point& to, const int radius) {
@@ -617,6 +620,110 @@ Output solve(const Input& input) {
     return { actions };
 }
 
+struct State {
+
+    const Input& input;
+    Hero hero;
+    Point pos;
+    std::vector<Monster> monsters;
+    std::vector<Action> actions;
+
+    State(const Input& input_) : input(input_), hero(input.hero), pos(input.start_pos) {
+        for (const auto& minfo : input.monsters) {
+            monsters.emplace_back(minfo);
+        }
+    }
+
+    int get_nearest_monster_id() const {
+        int mindist2 = INT_MAX;
+        int id = -1;
+        for (int mid = 0; mid < (int)monsters.size(); mid++) {
+            const auto& monster = monsters[mid];
+            if (monster.hp <= 0) continue;
+            if (chmin(mindist2, pos.dist2(monster.info.pos))) {
+                id = mid;
+            }
+        }
+        return id;
+    }
+
+    bool all_monsters_are_dead() const {
+        for (const auto& monster : monsters) {
+            if (monster.hp > 0) return false;
+        }
+        return true;
+    }
+
+    bool can_attack(int mid) const {
+        const Monster& monster = monsters[mid];
+        assert(monster.hp > 0);
+        const int range = hero.range();
+        return pos.dist2(monster.info.pos) <= range * range;
+    }
+
+    void attack(int mid) {
+        Monster& monster = monsters[mid];
+        monster.hp -= hero.power();
+        if (monster.hp <= 0) {
+            hero.xp += monster.info.xp;
+            hero.gold += monster.info.gold;
+            hero.update();
+        }
+        actions.push_back(Action::attack(mid));
+    }
+
+    void move_to_monster(int mid) {
+        const Monster& monster = monsters[mid];
+        auto& [x, y] = pos;
+        const auto [mx, my] = monster.info.pos;
+        const int speed = hero.speed();
+        int mindist2 = INT_MAX;
+        int tx = -1, ty = -1;
+        for (int nx = std::max(0, x - speed); nx <= std::min(input.width, x + speed); nx++) {
+            for (int ny = std::max(0, y - speed); ny <= std::min(input.height, y + speed); ny++) {
+                if ((x - nx) * (x - nx) + (y - ny) * (y - ny) > speed * speed) continue;
+                const int dist2 = (nx - mx) * (nx - mx) + (ny - my) * (ny - my);
+                if (chmin(mindist2, dist2)) {
+                    tx = nx;
+                    ty = ny;
+                }
+            }
+        }
+        x = tx;
+        y = ty;
+        actions.push_back(Action::move(x, y));
+    }
+
+    void move_to_monster2(int mid) {
+        const Monster& monster = monsters[mid];
+        const int speed = hero.speed();
+        pos = near_lattice_point(pos, monster.info.pos, speed);
+        actions.push_back(Action::move(pos.x, pos.y));
+    }
+
+    Output solve_nearest_neighbor() {
+        for (int turn = 0; turn < input.num_turns; turn++) {
+            if (all_monsters_are_dead()) {
+                actions.push_back(Action::move(pos.x, pos.y)); // do nothing
+            }
+            else {
+                int mid = get_nearest_monster_id();
+                if (can_attack(mid)) {
+                    attack(mid);
+                }
+                else {
+                    //move_to_monster(mid);
+                    move_to_monster2(mid);
+                }
+            }
+            //dump(turn, hero.level, hero.gold, actions.back().to_json());
+        }
+
+        return { actions };
+    }
+
+};
+
 void output_solution(const Output& output, const std::string output_filename) {
     std::ofstream output_file(output_filename);
     nlohmann::json output_json = output.to_json();
@@ -631,7 +738,9 @@ void batch_execute() {
         nlohmann::json input_json;
         input_file >> input_json;
         auto input = Input::load(input_json);
-        auto output = solve(input);
+        State state(input);
+        auto output = state.solve_nearest_neighbor();
+        //auto output = solve(input);
         dump(seed, compute_score(input, output));
         output_solution(output, format("../../out/%03d.json", seed));
     }
