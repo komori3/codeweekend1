@@ -188,6 +188,73 @@ struct LogTable {
 } log_table;
 
 
+struct Point {
+    int x, y;
+    Point(int x_ = 0, int y_ = 0) : x(x_), y(y_) {}
+};
+
+Point nearest_lattice_point(const Point& from, const Point& to, const int radius) {
+    const auto& [xfrom, yfrom] = from;
+    const auto& [xto, yto] = to;
+    int mindist2 = INT_MAX;
+    int minx = -1, miny = -1;
+    for (int x = xfrom - radius; x <= xfrom + radius; x++) {
+        for (int y = yfrom - radius; y <= yfrom + radius; y++) {
+            if ((x - xfrom) * (x - xfrom) + (y - yfrom) * (y - yfrom) > radius * radius) continue;
+            int dist2 = (x - xto) * (x - xto) + (y - yto) * (y - yto);
+            if (chmin(mindist2, dist2)) {
+                minx = x;
+                miny = y;
+            }
+        }
+    }
+    return { minx, miny };
+}
+
+Point near_lattice_point(const Point& from, const Point& to, const int radius) {
+    const auto& [xfrom, yfrom] = from;
+    const auto& [xto, yto] = to;
+    if ((xfrom - xto) * (xfrom - xto) + (yfrom - yto) * (yfrom - yto) <= radius * radius) {
+        return { xto, yto };
+    }
+    double dx = xto - xfrom, dy = yto - yfrom, d = sqrt(dx * dx + dy * dy);
+    int cx = (int)round(xfrom + dx * radius / d), cy = (int)round(yfrom + dy * radius / d);
+    int mindist2 = INT_MAX;
+    int minx = -1, miny = -1;
+    for (int x = cx - 1; x <= cx + 1; x++) {
+        for (int y = cy - 1; y <= cy + 1; y++) {
+            if ((x - xfrom) * (x - xfrom) + (y - yfrom) * (y - yfrom) > radius * radius) continue;
+            int dist2 = (x - xto) * (x - xto) + (y - yto) * (y - yto);
+            if (chmin(mindist2, dist2)) {
+                minx = x;
+                miny = y;
+            }
+        }
+    }
+    return { minx, miny };
+}
+
+void test_nearest_lattice_point() {
+    int all = 0, wrong = 0;
+    int xfrom = 0, yfrom = 0;
+    for (int radius = 1; radius <= 30; radius++) {
+        for (int dx = 0; dx <= 100; dx++) {
+            for (int dy = 0; dy <= 100; dy++) {
+                int xto = xfrom + dx, yto = yfrom + dy;
+                auto [x1, y1] = nearest_lattice_point({ xfrom, yfrom }, { xto, yto }, radius);
+                auto [x2, y2] = near_lattice_point({ xfrom, yfrom }, { xto, yto }, radius);
+                if (x1 != x2 || y1 != y2) {
+                    //dump(xfrom, yfrom, xto, yto, radius, dx, dy, x1, y1, x2, y2);
+                    wrong++;
+                }
+                all++;
+                //assert(x1 == x2 && y1 == y2);
+            }
+        }
+    }
+    dump(wrong, all);
+}
+
 // The world width and height, the number of monsters, and the number of turns are each less than 3000.
 // The hero's coordinates should always be integers during this glorious journey.
 struct HeroInfo {
@@ -218,15 +285,14 @@ public:
 
 struct MonsterInfo {
 
-    const int x;
-    const int y;
+    const Point pos;
     const int hp;
     const int gold;
     const int xp;
 
 private:
-    MonsterInfo(const int x_, const int y_, const int hp_, const int gold_, const int exp_)
-        : x(x_), y(y_), hp(hp_), gold(gold_), xp(exp_) {}
+    MonsterInfo(const Point pos_, const int hp_, const int gold_, const int exp_)
+        : pos(pos_), hp(hp_), gold(gold_), xp(exp_) {}
 
 public:
     static MonsterInfo load(nlohmann::json j) {
@@ -235,7 +301,7 @@ public:
         const int hp = j["hp"];
         const int gold = j["gold"];
         const int exp = j["exp"];
-        return MonsterInfo(x, y, hp, gold, exp);
+        return MonsterInfo(Point(x, y), hp, gold, exp);
     }
 
 };
@@ -245,14 +311,13 @@ struct Input {
     const int num_turns;
     const int width;
     const int height;
-    const int start_x;
-    const int start_y;
+    const Point start_pos;
     HeroInfo hero;
     std::vector<MonsterInfo> monsters;
 
 private:
-    Input(const int num_turns_, const int width_, const int height_, const int start_x_, const int start_y_, const HeroInfo& hero_, const std::vector<MonsterInfo>& monsters_)
-        : num_turns(num_turns_), width(width_), height(height_), start_x(start_x_), start_y(start_y_), hero(hero_), monsters(monsters_) {}
+    Input(const int num_turns_, const int width_, const int height_, const Point start_pos_, const HeroInfo& hero_, const std::vector<MonsterInfo>& monsters_)
+        : num_turns(num_turns_), width(width_), height(height_), start_pos(start_pos_), hero(hero_), monsters(monsters_) {}
 
 public:
     static Input load(nlohmann::json j) {
@@ -267,7 +332,7 @@ public:
             auto monster = MonsterInfo::load(jj);
             monsters.push_back(monster);
         }
-        return Input(num_turns, width, height, start_x, start_y, hero, monsters);
+        return Input(num_turns, width, height, Point(start_x, start_y), hero, monsters);
     }
 
 };
@@ -395,8 +460,7 @@ struct Output {
 
 int compute_score(const Input& input, const Output& output) {
     Hero hero(input.hero);
-    int x = input.start_x;
-    int y = input.start_y;
+    auto [x, y] = input.start_pos;
     std::vector<Monster> monsters;
     for (const auto& minfo : input.monsters) {
         monsters.emplace_back(minfo);
@@ -416,7 +480,7 @@ int compute_score(const Input& input, const Output& output) {
             assert(0 <= id && id < (int)monsters.size());
             auto& monster = monsters[id];
             assert(monster.hp > 0);
-            const int mx = monster.info.x, my = monster.info.y;
+            const auto [mx, my] = monster.info.pos;
             const int range = hero.range();
             assert((x - mx) * (x - mx) + (y - my) * (y - my) <= range * range);
             monster.hp -= hero.power();
@@ -453,8 +517,7 @@ void test_sample() {
 Output solve(const Input& input) {
 
     Hero hero(input.hero);
-    int x = input.start_x;
-    int y = input.start_y;
+    auto [x, y] = input.start_pos;
 
     std::vector<Monster> monsters;
     for (const auto& minfo : input.monsters) {
@@ -469,7 +532,7 @@ Output solve(const Input& input) {
         for (int mid = 0; mid < (int)monsters.size(); mid++) {
             const auto& monster = monsters[mid];
             if (monster.hp <= 0) continue;
-            const int mx = monster.info.x, my = monster.info.y;
+            const auto [mx, my] = monster.info.pos;
             int dist2 = (x - mx) * (x - mx) + (y - my) * (y - my);
             if (chmin(mindist2, dist2)) {
                 id = mid;
@@ -488,7 +551,7 @@ Output solve(const Input& input) {
     auto can_attack = [&](int mid) {
         const Monster& monster = monsters[mid];
         assert(monster.hp > 0);
-        const int mx = monster.info.x, my = monster.info.y;
+        const auto [mx, my] = monster.info.pos;
         const int range = hero.range();
         return (x - mx) * (x - mx) + (y - my) * (y - my) <= range * range;
     };
@@ -506,7 +569,7 @@ Output solve(const Input& input) {
 
     auto move_to_monster = [&](int mid) {
         const Monster& monster = monsters[mid];
-        const int mx = monster.info.x, my = monster.info.y;
+        const auto [mx, my] = monster.info.pos;
         const int speed = hero.speed();
         int mindist2 = INT_MAX;
         int tx = -1, ty = -1;
@@ -524,6 +587,15 @@ Output solve(const Input& input) {
         y = ty;
         actions.push_back(Action::move(x, y));
     };
+
+    auto move_to_monster2 = [&](int mid) {
+        const Monster& monster = monsters[mid];
+        const int speed = hero.speed();
+        auto [tx, ty] = near_lattice_point({ x, y }, monster.info.pos, speed);
+        x = tx;
+        y = ty;
+        actions.push_back(Action::move(x, y));
+    };
     
     for (int turn = 0; turn < input.num_turns; turn++) {
         if (all_monsters_are_dead()) {
@@ -535,7 +607,8 @@ Output solve(const Input& input) {
                 attack(mid);
             }
             else {
-                move_to_monster(mid);
+                //move_to_monster(mid);
+                move_to_monster2(mid);
             }
         }
         //dump(turn, hero.level, hero.gold, actions.back().to_json());
@@ -551,6 +624,7 @@ void output_solution(const Output& output, const std::string output_filename) {
 }
 
 void batch_execute() {
+    Timer timer;
     for (int seed = 1; seed <= 50; seed++) {
         std::string input_filename(format("../../in/%03d.json", seed));
         std::ifstream input_file(input_filename);
@@ -561,6 +635,7 @@ void batch_execute() {
         dump(seed, compute_score(input, output));
         output_solution(output, format("../../out/%03d.json", seed));
     }
+    dump(timer.elapsed_ms());
 }
 
 
