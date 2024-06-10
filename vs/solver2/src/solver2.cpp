@@ -594,6 +594,8 @@ struct State {
     Point pos;
     std::vector<Monster> monsters;
     std::vector<Action> actions;
+    int target_mid = -1;
+    int damage = 0;
 
     State(const Input& input_) : input(input_), hero(input.hero), pos(input.start_pos) {
         for (const auto& minfo : input.monsters) {
@@ -630,8 +632,12 @@ struct State {
 
     void attack(int mid) {
         Monster& monster = monsters[mid];
-        monster.hp -= hero.power();
+        int power = hero.power();
+        monster.hp -= power;
+        target_mid = mid;
+        damage += power;
         if (monster.hp <= 0) {
+            damage = 0;
             hero.xp += monster.info.xp;
             hero.gold += (size_t)monster.info.gold * 1000 / (1000 + hero.fatigue);
             hero.update();
@@ -733,13 +739,22 @@ struct State {
         }
     }
 
+    double eval() const {
+        double score = hero.gold;
+        if (damage) {
+            const auto& monster = monsters[target_mid];
+            score += 1.0 * monster.info.gold * damage / monster.hp * 1000 / (1000 + hero.fatigue);
+        }
+        return score;
+    }
+
 };
 
 Output solve(const Input& input, const int seed = -1, const double duration_ms = 100000, const double temp_ratio = 0.01) {
 
     Timer timer;
 
-    int best_score = -1;
+    double best_score = -1.0;
     std::vector<Action> best_actions;
 
     //for (int mid = -1; mid < (int)input.monsters.size(); mid++) {
@@ -764,7 +779,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             auto output_best_opt = load_output(seed);
             if (output_best_opt) {
                 int score = compute_score(input, output_best_opt.value());
-                if (chmax(best_score, score)) {
+                if (chmax(best_score, (double)score)) {
                     best_actions = output_best_opt.value().actions;
                 }
             }
@@ -788,7 +803,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
         }
     }
 
-    int prev_score = best_score;
+    double prev_score = best_score;
 
     Xorshift rnd;
     int loop = 0;
@@ -818,7 +833,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             if (rnd.next_double() < prob) {
                 rev_ctr++;
                 prev_score = state.hero.gold;
-                if (chmax(best_score, state.hero.gold)) {
+                if (chmax(best_score, state.eval())) {
                     best_actions = state.actions;
                     //dump("rev", timer.elapsed_ms(), loop, best_score);
                 }
@@ -837,7 +852,7 @@ Output solve(const Input& input, const int seed = -1, const double duration_ms =
             if (rnd.next_double() < prob) {
                 swp_ctr++;
                 prev_score = state.hero.gold;
-                if (chmax(best_score, state.hero.gold)) {
+                if (chmax(best_score, state.eval())) {
                     best_actions = state.actions;
                     //dump("swp", timer.elapsed_ms(), loop, best_score);
                 }
@@ -878,38 +893,41 @@ void batch_execute() {
 
 void batch_execute2() {
     const int batch_size = 5;
-    std::vector<int> seeds, best_scores, next_seeds, next_best_scores;
+    std::vector<int> seeds/*, best_scores, next_seeds, next_best_scores*/;
     for (int seed = 26; seed <= 50; seed++) {
         seeds.push_back(seed);
-        best_scores.push_back(get_best_score(seed));
+        //best_scores.push_back(get_best_score(seed));
     }
+    int iter = 0;
     while (!seeds.empty()) {
-        next_seeds.clear();
-        next_best_scores.clear();
-        dump(seeds);
-        dump(best_scores);
+        //next_seeds.clear();
+        //next_best_scores.clear();
+        dump(iter);
+        //dump(best_scores);
         concurrency::critical_section mtx;
         for (int begin = 0; begin < (int)seeds.size(); begin += batch_size) {
             int end = std::min(begin + batch_size, (int)seeds.size());
-            concurrency::parallel_for(begin, end, [&seeds, &best_scores, &next_seeds, &next_best_scores, &mtx](int id) {
+            dump(begin, end);
+            concurrency::parallel_for(begin, end, [&seeds, /*&best_scores, &next_seeds, &next_best_scores,*/ &mtx](int id) {
                 int seed = seeds[id];
-                int best_score = best_scores[id];
+                //int best_score = best_scores[id];
                 auto input = load_input(seed);
-                auto output = solve(input, seed, 60000, 0.001);
+                auto output = solve(input, seed, 60000, 0.0001);
                 int score = compute_score(input, output);
                 {
                     mtx.lock();
                     output_if_best(seed, output);
-                    if (best_score < score) {
-                        next_seeds.push_back(seed);
-                        next_best_scores.push_back(score);
-                    }
+                    //if (best_score < score) {
+                    //    next_seeds.push_back(seed);
+                    //    next_best_scores.push_back(score);
+                    //}
                     mtx.unlock();
                 }
                 });
         }
-        seeds = next_seeds;
-        best_scores = next_best_scores;
+        //seeds = next_seeds;
+        //best_scores = next_best_scores;
+        iter++;
     }
 }
 
